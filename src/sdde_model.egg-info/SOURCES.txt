@@ -1,9 +1,0 @@
-README.md
-pyproject.toml
-src/sdde_model/__init__.py
-src/sdde_model/solar_dynamo.py
-src/sdde_model.egg-info/PKG-INFO
-src/sdde_model.egg-info/SOURCES.txt
-src/sdde_model.egg-info/dependency_links.txt
-src/sdde_model.egg-info/requires.txt
-src/sdde_model.egg-info/top_level.txt
