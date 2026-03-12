@@ -1,0 +1,24 @@
+Metadata-Version: 2.4
+Name: sdde-model
+Version: 0.1.0
+Summary: Shared Python bridge to the Julia SDDE solar dynamo model
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.17
+Requires-Dist: juliacall
+
+# SDDE-model
+
+Shared Python package for the Julia-wrapped SDDE solar dynamo model.
+
+## Install (editable)
+
+```bash
+pip install -e /Users/ulzg/SABC/SDDE-model
+```
+
+## Usage
+
+```python
+from sdde_model import sn, sn_batch, summary_statistics
+```
