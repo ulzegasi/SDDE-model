@@ -16,5 +16,8 @@ dependencies = [
 [tool.setuptools]
 package-dir = {"" = "src"}
 
+[tool.setuptools.package-data]
+sdde_model = ["julia_env/Project.toml", "julia_env/Manifest.toml"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

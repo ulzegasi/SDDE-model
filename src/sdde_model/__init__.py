@@ -1,5 +1,6 @@
 """Shared SDDE solar dynamo Python/Julia bridge."""
 
+from .bootstrap import init_julia
 from .solar_dynamo import (
     hann_window,
     sn,
@@ -14,6 +15,7 @@ from .solar_dynamo import (
 )
 
 __all__ = [
+    "init_julia",
     "hann_window",
     "sn",
     "sn_batch",

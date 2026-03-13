@@ -9,7 +9,7 @@ Author: Simone Ulzega, March 2026, simone.ulzega@zhaw.ch
 - sn() runs the SDDE solver and returns the time series of the magnetic field strength
 - summary_statistics() computes summary statistics from the time series using FFT
 - We do the Julia setup lazily, only when sn() or summary_statistics() is called
-- For stability, call julia_bootstrap.init_julia() at the very top of your main script
+- For stability, call sdde_model.init_julia() at the very top of your main script
 """
   
 from __future__ import annotations
@@ -18,7 +18,7 @@ import numpy as np
 
 # IMPORTANT:
 # - Do NOT import juliacall.Main at module import time (can crash depending on import order).
-# - We only grab it inside _init_julia(), ideally after julia_bootstrap.init_julia() was called.
+# - We only grab it inside _init_julia(), ideally after sdde_model.init_julia() was called.
 
 jl = None
 _INITIALIZED = False
@@ -28,17 +28,18 @@ def _init_julia():
     One-time Julia setup: imports packages and defines Julia functions.
 
     For stability:
-    - Call julia_bootstrap.init_julia() at the very top of your main script
-      BEFORE importing tensorflow or src.* modules that may pull TF in.
+    - Call sdde_model.init_julia() at the very top of your main script
+      BEFORE importing tensorflow or other native-library-heavy modules.
     """
     global _INITIALIZED, jl
     if _INITIALIZED:
         return
 
-    # Import Main lazily (already bootstrapped in julia_bootstrap)
+    # Bootstrap Julia lazily if the caller did not do it explicitly first.
     if jl is None:
-        from juliacall import Main as _jl
-        jl = _jl
+        from .bootstrap import init_julia
+
+        jl = init_julia()
 
     # Julia imports (one-time)
     jl.seval("using StochasticDelayDiffEq")
