@@ -5,9 +5,16 @@ Stochastic Delay Differential Equation tooling.
 
 ## Install (editable)
 
+Install `sdde_model` into the Python environment of the project that wants to use
+this wrapped Julia model. Activate that environment first, then run:
+
 ```bash
+conda activate my_project_env
 pip install -e /Users/ulzg/SABC/SDDE-model
 ```
+
+The `-e` means editable install, so changes in `/Users/ulzg/SABC/SDDE-model` are
+immediately visible in that Python environment without reinstalling.
 
 ## Usage
 
