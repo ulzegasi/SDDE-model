@@ -1,0 +1,10 @@
+name: sddepy_env
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10
+  - pip
+  - numpy>=1.17
+  - matplotlib>=3.8
+  - pip:
+      - -e .

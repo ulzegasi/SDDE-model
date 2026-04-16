@@ -16,6 +16,14 @@ pip install -e /Users/ulzg/SABC/SDDE-model
 The `-e` means editable install, so changes in `/Users/ulzg/SABC/SDDE-model` are
 immediately visible in that Python environment without reinstalling.
 
+If you want the repo to declare its intended conda environment explicitly, you can
+also create it from [environment.yml](/Users/ulzg/SABC/SDDE-model/environment.yml:1):
+
+```bash
+conda env create -f /Users/ulzg/SABC/SDDE-model/environment.yml
+conda activate sddepy_env
+```
+
 ## Usage
 
 ```python
@@ -77,3 +85,67 @@ from sdde_model import sn, sn_batch
 
 This explicit call is the safest pattern. Lazy initialization still works, but it is
 less predictable if another library initializes native dependencies first.
+
+## Plotting From The Command Line
+
+After installing the package, you can simulate one trajectory and plot `sn` with:
+
+```bash
+plot-sn \
+  --tau 2.0 \
+  --T 1.5 \
+  --Nd 4.0 \
+  --sigma 0.1 \
+  --Bmax 5.0 \
+  --T-warmup 200 \
+  --T-obs 929 \
+  --seed 123 \
+  --dt 0.1 \
+  --saveat 1.0
+```
+
+If you omit `--output`, `plot-sn` opens an interactive preview window and does not
+save a PNG.
+
+If you omit `--seed`, each run uses fresh randomness, so rerunning the same command
+will generally produce a different trajectory.
+
+If you pass `--nsim N`, `plot-sn` runs `N` stochastic simulations with the same
+parameter set and overlays them on the same plot using different colors.
+
+If you omit `--nsim`, the default is `1`.
+
+If you use `--nsim` together with `--seed`, the runs use seeds `seed`, `seed+1`,
+..., `seed+N-1` so the batch is reproducible while still producing different
+trajectories.
+
+For example, to compare five runs on the same figure:
+
+```bash
+plot-sn \
+  --tau 2.0 \
+  --T 1.5 \
+  --Nd 4.0 \
+  --sigma 0.1 \
+  --Bmax 5.0 \
+  --T-warmup 200 \
+  --T-obs 929 \
+  --nsim 5
+```
+
+To save the figure instead of opening a window:
+
+```bash
+plot-sn \
+  --tau 2.0 \
+  --T 1.5 \
+  --Nd 4.0 \
+  --sigma 0.1 \
+  --Bmax 5.0 \
+  --T-warmup 200 \
+  --T-obs 929 \
+  --output sn_plot.png
+```
+
+When `--output` is used, the saved PNG includes a parameter summary below the plot
+so the figure records the settings that generated it.

@@ -11,7 +11,11 @@ requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.17",
   "juliacall",
+  "matplotlib>=3.8",
 ]
+
+[project.scripts]
+plot-sn = "sdde_model.plot_sn:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
