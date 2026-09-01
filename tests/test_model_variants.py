@@ -76,6 +76,47 @@ class JupiterDispatchTests(unittest.TestCase):
                 solar_dynamo_jupiter.sn_batch(np.ones((2, 5)))
         initialize.assert_not_called()
 
+    def test_explicit_noise_wrapper_forwards_bare_increments(self):
+        fake_julia = Mock()
+        fake_julia.sn_from_noise_jupiter_nd.return_value = [3.0, 4.0]
+        eps = np.arange(20, dtype=np.float64)
+
+        with (
+            patch.object(solar_dynamo_jupiter, "_init_julia"),
+            patch.object(solar_dynamo_jupiter, "jl", fake_julia),
+        ):
+            result = solar_dynamo_jupiter.sn_from_noise(
+                JUPITER_THETA,
+                eps,
+                Twarmup=1,
+                Tobs=1,
+                dt=0.1,
+                saveat=1.0,
+            )
+
+        self.assertEqual(result, [3.0, 4.0])
+        fake_julia.sn_from_noise_jupiter_nd.assert_called_once_with(
+            JUPITER_THETA,
+            eps,
+            Twarmup=1,
+            Tobs=1,
+            dt=0.1,
+            saveat=1.0,
+        )
+
+    def test_explicit_noise_batch_validates_shapes_before_julia(self):
+        theta_batch = np.tile(JUPITER_THETA, (2, 1))
+        with patch.object(solar_dynamo_jupiter, "_init_julia") as initialize:
+            with self.assertRaisesRegex(ValueError, "eps_batch must have shape"):
+                solar_dynamo_jupiter.sn_from_noise_batch(
+                    theta_batch,
+                    np.ones((2, 19)),
+                    Twarmup=1,
+                    Tobs=1,
+                    dt=0.1,
+                )
+        initialize.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

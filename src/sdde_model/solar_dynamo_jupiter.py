@@ -40,6 +40,7 @@ def _init_julia() -> None:
 
     _original._init_julia()
     jl = _original.jl
+    jl.seval("using DiffEqNoiseProcess: NoiseGrid")
     jl.seval(
         r"""
         const JUPITER_ORBITAL_PERIOD_YEARS_ND = 11.86
@@ -63,7 +64,14 @@ def _init_julia() -> None:
             SA[du1, du2]
         end
 
-        function bfield_jupiter_nd(θ, Tsim; dt=0.1, saveat=1.0, seed=nothing)
+        function bfield_jupiter_nd(
+            θ,
+            Tsim;
+            dt=0.1,
+            saveat=1.0,
+            seed=nothing,
+            noise=nothing,
+        )
             @assert length(θ) == 7 "Jupiter model requires 7 parameters"
             τ, T, Nd, sigma, Bmax, eps, phi = θ
             @assert 0 <= eps < 1 "epsilon must satisfy 0 <= epsilon < 1"
@@ -81,6 +89,7 @@ def _init_julia() -> None:
                 tspan,
                 θ;
                 constant_lags=lags,
+                noise=noise,
             )
 
             if seed !== nothing
@@ -133,55 +142,54 @@ def _init_julia() -> None:
             @assert abs(Ndt*dt - Tsim) < 1e-9 "Tsim must be multiple of dt"
             @assert length(eps_dt) >= Ndt "eps_dt too short: need Ndt = Tsim/dt"
 
-            lag_steps = Int(round(T / dt))
-            @assert lag_steps >= 1 "T/dt too small or dt too large"
-            @assert abs(lag_steps*dt - T) < 1e-6 "T must be (approximately) a multiple of dt for this discretization"
-
-            coeff = Bmax * sigma / (τ^(3/2))
-            sdt = sqrt(dt)
-            k = Int(round(1.0 / dt))
-            @assert abs(k*dt - 1.0) < 1e-12 "dt must divide 1.0 when saveat==1.0"
-
-            Nsave = Int(round(Tsim)) + 1
-            @assert abs(Tsim - (Nsave - 1)) < 1e-9 "Tsim must be integer when saveat==1.0"
-
-            B = Bmax
-            dB = 0.0
-            Bhist = fill(Bmax, lag_steps)
-            hidx = 1
-
-            y_save = Vector{Float64}(undef, Nsave)
-            y_save[1] = B^2
-
-            i = 0
-            @inbounds for j in 1:(Nsave-1)
-                for _sub in 1:k
-                    i += 1
-                    B_delay = Bhist[hidx]
-
-                    t = (i - 1)*dt
-                    Nd_eff = Nd * jupiter_nd_modulation(t, eps, phi)
-                    du1 = dB
-                    du2 = -B/τ^2 - 2*dB/τ - (Nd_eff/τ^2)*ftilde(B_delay, 1, Bmax)
-
-                    dB_new = dB + du2*dt + coeff*sdt*eps_dt[i]
-                    B_new = B + du1*dt
-
-                    Bhist[hidx] = B_new
-                    hidx += 1
-                    if hidx > lag_steps
-                        hidx = 1
-                    end
-
-                    B, dB = B_new, dB_new
-                end
-                y_save[j+1] = B^2
+            # Convert the caller-supplied standard-normal values into the
+            # cumulative Brownian path expected by SciML.  Because NoiseGrid
+            # is sampled on exactly the EM grid, solve() consumes increments
+            # sqrt(dt)*eps_dt while retaining SDDEProblem's delay handling.
+            noise_times = collect(range(0.0; step=dt, length=Ndt + 1))
+            brownian_path = Vector{Float64}(undef, Ndt + 1)
+            brownian_path[1] = 0.0
+            sqrt_dt = sqrt(dt)
+            @inbounds for i in 1:Ndt
+                brownian_path[i + 1] = brownian_path[i] + sqrt_dt*eps_dt[i]
             end
+            noise = NoiseGrid(noise_times, brownian_path)
 
-            start = Twarmup + 2
-            stop = start + Tobs - 1
-            @assert stop <= length(y_save)
-            return y_save[start:stop]
+            sol = bfield_jupiter_nd(
+                theta,
+                Tsim;
+                dt=dt,
+                saveat=saveat,
+                noise=noise,
+            )
+            return map(abs2, sol[1, (Twarmup + 2):end])
+        end
+
+        function sn_from_noise_batch_jupiter_nd(
+            theta_batch,
+            eps_batch;
+            Twarmup=200,
+            Tobs=929,
+            dt=0.1,
+            saveat=1.0,
+        )
+            n_batch = size(theta_batch, 1)
+            @assert size(theta_batch, 2) == 7 "theta_batch must have 7 columns"
+            @assert size(eps_batch, 1) == n_batch "eps_batch must have one row per theta"
+            out = Matrix{Float64}(undef, n_batch, Tobs)
+
+            @inbounds for i in 1:n_batch
+                theta_i = tuple(theta_batch[i, :]...)
+                out[i, :] .= sn_from_noise_jupiter_nd(
+                    theta_i,
+                    view(eps_batch, i, :);
+                    Twarmup=Twarmup,
+                    Tobs=Tobs,
+                    dt=dt,
+                    saveat=saveat,
+                )
+            end
+            return out
         end
 
         function sn_for_enca_jupiter_nd(theta; Twarmup=200, Tobs=929, dt=0.1, saveat=1.0, seed=nothing)
@@ -297,6 +305,43 @@ def sn_from_noise(theta, eps, Twarmup=200, Tobs=929, dt=0.1, saveat=1.0):
     )
 
 
+def sn_from_noise_batch(
+    theta_batch,
+    eps_batch,
+    Twarmup=200,
+    Tobs=929,
+    dt=0.1,
+    saveat=1.0,
+):
+    """Simulate a batch using caller-supplied standard-normal EM increments."""
+    theta_batch = np.asarray(theta_batch, dtype=np.float64)
+    eps_batch = np.asarray(eps_batch, dtype=np.float64)
+    if theta_batch.ndim != 2 or theta_batch.shape[1] != 7:
+        raise ValueError("theta_batch must have shape (n_batch, 7)")
+    if np.any((theta_batch[:, 5] < 0) | (theta_batch[:, 5] >= 1)):
+        raise ValueError("epsilon must satisfy 0 <= epsilon < 1")
+    expected_increments = int(round((Twarmup + Tobs) / dt))
+    if eps_batch.ndim != 2 or eps_batch.shape != (
+        theta_batch.shape[0],
+        expected_increments,
+    ):
+        raise ValueError(
+            "eps_batch must have shape "
+            f"({theta_batch.shape[0]}, {expected_increments})"
+        )
+
+    _init_julia()
+    result = jl.sn_from_noise_batch_jupiter_nd(
+        theta_batch,
+        eps_batch,
+        Twarmup=Twarmup,
+        Tobs=Tobs,
+        dt=dt,
+        saveat=saveat,
+    )
+    return np.asarray(result, dtype=np.float64)
+
+
 def sn_nrep(theta, seeds, Twarmup=200, Tobs=929, dt=0.1, saveat=1.0):
     theta = _validate_theta(theta)
     _init_julia()
@@ -339,6 +384,7 @@ __all__ = [
     "sn_batch",
     "sn_for_enca",
     "sn_from_noise",
+    "sn_from_noise_batch",
     "sn_nrep",
     "summary_statistics",
     "summary_statistics_batch",
