@@ -47,6 +47,7 @@ def _init_julia():
     jl.seval("using StaticArrays")
     jl.seval("using FFTW")
     jl.seval("using Random")
+    jl.seval("using DiffEqNoiseProcess: NoiseGrid")
 
     # Define Julia functions (one-time)
     jl.seval(
@@ -68,14 +69,23 @@ def _init_julia():
             SA[du1, du2]
         end
 
-        function bfield(θ, Tsim; dt=0.1, saveat=1.0, seed=nothing)
+        function bfield(θ, Tsim; dt=0.1, saveat=1.0, seed=nothing, noise=nothing)
             τ, T, Nd, sigma, Bmax = θ
             u0 = SA[Bmax, 0.0]
             h(p, t; idxs = nothing) = idxs == 1 ? Bmax : (Bmax, 0.0)
             lags = (T,)
             tspan = (0.0, Tsim)
 
-            prob = SDDEProblem(f, g, u0, h, tspan, θ; constant_lags = lags)
+            prob = SDDEProblem(
+                f,
+                g,
+                u0,
+                h,
+                tspan,
+                θ;
+                constant_lags=lags,
+                noise=noise,
+            )
 
             if seed !== nothing
                 Random.seed!(seed)
@@ -115,96 +125,62 @@ def _init_julia():
             return out
         end
         
-        # ------------------------------------------------------------
-        # Deterministic EM given "bare noise" eps ~ N(0,1)
-        # This is the ENCA-friendly model: x = M(theta, eps)
-        # ------------------------------------------------------------
-
-        # ------------------------------------------------------------
-        # ENCA-friendly deterministic EM given dt-level bare noise eps_dt ~ N(0,1)
-        # eps_dt is per dt-increment (length = Ndt = Tsim/dt)
-        # Output is sampled every 1.0 time unit (saveat==1.0) and then warmup-cropped
-        # ------------------------------------------------------------
+        # Deterministic SDDEProblem/EM solve given dt-level bare Gaussian
+        # increments. NoiseGrid exposes the noise without replacing the
+        # solver's continuous-delay history handling.
         function sn_from_noise(theta, eps_dt; Twarmup=200, Tobs=929, dt=0.1, saveat=1.0)
             @assert abs(saveat - 1.0) < 1e-12 "This implementation assumes saveat == 1.0"
             @assert dt > 0
-
-            τ, T, Nd, sigma, Bmax = theta
-
+            @assert length(theta) == 5 "Original model requires 5 parameters"
             Tsim = Twarmup + Tobs
-
-            # dt-grid increments
             Ndt = Int(round(Tsim / dt))
             @assert abs(Ndt*dt - Tsim) < 1e-9 "Tsim must be multiple of dt"
             @assert length(eps_dt) >= Ndt "eps_dt too short: need Ndt = Tsim/dt"
 
-            # delay in dt steps
-            lag_steps = Int(round(T / dt))
-            @assert lag_steps >= 1 "T/dt too small or dt too large"
-            @assert abs(lag_steps*dt - T) < 1e-6 "T must be (approximately) a multiple of dt for this discretization"
-
-            # EM noise scale
-            coeff = Bmax * sigma / (τ^(3/2))
-            sdt = sqrt(dt)
-
-            # save every 1.0 time unit => k substeps per saved point
-            k = Int(round(1.0 / dt))
-            @assert abs(k*dt - 1.0) < 1e-12 "dt must divide 1.0 when saveat==1.0"
-
-            # total saved points over [0, Tsim]: 0,1,2,...,Tsim
-            Nsave = Int(round(Tsim)) + 1
-            @assert abs(Tsim - (Nsave - 1)) < 1e-9 "Tsim must be integer when saveat==1.0"
-
-            # state
-            B  = Bmax
-            dB = 0.0
-
-            # ---- Ring buffer for delayed B (O(1), no popfirst!) ----
-            # We store past B values at dt-grid points. The "delayed" value used at a step
-            # is Bhist[hidx], where hidx points to the value from T units ago.
-            Bhist = fill(Bmax, lag_steps)   # length = lag_steps
-            hidx  = 1                       # next "delayed" slot to read/overwrite
-
-            # output on integer-time grid (since saveat==1.0)
-            y_save = Vector{Float64}(undef, Nsave)
-            y_save[1] = B^2
-
-            i = 0  # index into eps_dt
-            @inbounds for j in 1:(Nsave-1)
-                # advance by 1.0 time unit = k EM substeps
-                for _sub in 1:k
-                    i += 1
-
-                    # delayed value (T in the past, discretized)
-                    B_delay = Bhist[hidx]
-
-                    # drift (same form as your SDDE definition)
-                    du1 = dB
-                    du2 = -B/τ^2 - 2*dB/τ - (Nd/τ^2) * ftilde(B_delay, 1, Bmax)
-
-                    # EM update
-                    dB_new = dB + du2*dt + coeff*sdt*eps_dt[i]
-                    B_new  = B  + du1*dt
-
-                    # update ring buffer with the NEW B (at the new time)
-                    Bhist[hidx] = B_new
-                    hidx += 1
-                    if hidx > lag_steps
-                        hidx = 1
-                    end
-
-                    B, dB = B_new, dB_new
-                end
-
-                y_save[j+1] = B^2
+            noise_times = collect(range(0.0; step=dt, length=Ndt + 1))
+            brownian_path = Vector{Float64}(undef, Ndt + 1)
+            brownian_path[1] = 0.0
+            sqrt_dt = sqrt(dt)
+            @inbounds for i in 1:Ndt
+                brownian_path[i + 1] = brownian_path[i] + sqrt_dt*eps_dt[i]
             end
+            noise = NoiseGrid(noise_times, brownian_path)
 
-            # crop warmup (integer-time indexing, consistent with your original sn)
-            start = Twarmup + 2
-            stop  = start + Tobs - 1
-            @assert stop <= length(y_save)
+            sol = bfield(
+                theta,
+                Tsim;
+                dt=dt,
+                saveat=saveat,
+                noise=noise,
+            )
+            return map(abs2, sol[1, (Twarmup + 2):end])
+        end
 
-            return y_save[start:stop]
+        function sn_from_noise_batch(
+            theta_batch,
+            eps_batch;
+            Twarmup=200,
+            Tobs=929,
+            dt=0.1,
+            saveat=1.0,
+        )
+            n_batch = size(theta_batch, 1)
+            @assert size(theta_batch, 2) == 5 "theta_batch must have 5 columns"
+            @assert size(eps_batch, 1) == n_batch "eps_batch must have one row per theta"
+            out = Matrix{Float64}(undef, n_batch, Tobs)
+
+            @inbounds for i in 1:n_batch
+                theta_i = tuple(theta_batch[i, :]...)
+                out[i, :] .= sn_from_noise(
+                    theta_i,
+                    view(eps_batch, i, :);
+                    Twarmup=Twarmup,
+                    Tobs=Tobs,
+                    dt=dt,
+                    saveat=saveat,
+                )
+            end
+            return out
         end
 
         function sn_for_enca(theta; Twarmup=200, Tobs=929, dt=0.1, saveat=1.0, seed=nothing)
@@ -385,8 +361,41 @@ def sn_for_enca(theta, Twarmup=200, Tobs=929, dt=0.1, saveat=1.0, seed=None):
     return jl.sn_for_enca(tuple(theta), Twarmup=Twarmup, Tobs=Tobs, dt=dt, saveat=saveat, seed=seed)
 
 def sn_from_noise(theta, eps, Twarmup=200, Tobs=929, dt=0.1, saveat=1.0):
+    theta = tuple(theta)
+    if len(theta) != 5:
+        raise ValueError("Original model requires 5 parameters")
     _init_julia()
-    return jl.sn_from_noise(tuple(theta), eps, Twarmup=Twarmup, Tobs=Tobs, dt=dt, saveat=saveat)
+    return jl.sn_from_noise(theta, eps, Twarmup=Twarmup, Tobs=Tobs, dt=dt, saveat=saveat)
+
+
+def sn_from_noise_batch(
+    theta_batch,
+    eps_batch,
+    Twarmup=200,
+    Tobs=929,
+    dt=0.1,
+    saveat=1.0,
+):
+    """Simulate an original-model batch with explicit Gaussian EM increments."""
+    theta_batch = np.asarray(theta_batch, dtype=np.float64)
+    eps_batch = np.asarray(eps_batch, dtype=np.float64)
+    if theta_batch.ndim != 2 or theta_batch.shape[1] != 5:
+        raise ValueError("theta_batch must have shape (n_batch, 5)")
+    expected_increments = int(round((Twarmup + Tobs) / dt))
+    expected_shape = (theta_batch.shape[0], expected_increments)
+    if eps_batch.ndim != 2 or eps_batch.shape != expected_shape:
+        raise ValueError(f"eps_batch must have shape {expected_shape}")
+
+    _init_julia()
+    result = jl.sn_from_noise_batch(
+        theta_batch,
+        eps_batch,
+        Twarmup=Twarmup,
+        Tobs=Tobs,
+        dt=dt,
+        saveat=saveat,
+    )
+    return np.asarray(result, dtype=np.float64)
 
 def sn_nrep(theta, seeds, Twarmup=200, Tobs=929, dt=0.1, saveat=1.0):
     _init_julia()

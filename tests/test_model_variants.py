@@ -19,7 +19,49 @@ class OriginalBridgeTests(unittest.TestCase):
         self.assertNotIn("model", inspect.signature(solar_dynamo.sn).parameters)
         self.assertNotIn("model", inspect.signature(solar_dynamo.sn_batch).parameters)
         self.assertNotIn("model", inspect.signature(solar_dynamo.sn_from_noise).parameters)
+        self.assertNotIn("model", inspect.signature(solar_dynamo.sn_from_noise_batch).parameters)
         self.assertNotIn("model", inspect.signature(solar_dynamo.sn_nrep).parameters)
+
+    def test_explicit_noise_wrapper_forwards_bare_increments(self):
+        fake_julia = Mock()
+        fake_julia.sn_from_noise.return_value = [1.0, 2.0]
+        eps = np.arange(20, dtype=np.float64)
+
+        with (
+            patch.object(solar_dynamo, "_init_julia"),
+            patch.object(solar_dynamo, "jl", fake_julia),
+        ):
+            result = solar_dynamo.sn_from_noise(
+                ORIGINAL_THETA,
+                eps,
+                Twarmup=1,
+                Tobs=1,
+                dt=0.1,
+                saveat=1.0,
+            )
+
+        self.assertEqual(result, [1.0, 2.0])
+        fake_julia.sn_from_noise.assert_called_once_with(
+            ORIGINAL_THETA,
+            eps,
+            Twarmup=1,
+            Tobs=1,
+            dt=0.1,
+            saveat=1.0,
+        )
+
+    def test_explicit_noise_batch_validates_shapes_before_julia(self):
+        theta_batch = np.tile(ORIGINAL_THETA, (2, 1))
+        with patch.object(solar_dynamo, "_init_julia") as initialize:
+            with self.assertRaisesRegex(ValueError, "eps_batch must have shape"):
+                solar_dynamo.sn_from_noise_batch(
+                    theta_batch,
+                    np.ones((2, 19)),
+                    Twarmup=1,
+                    Tobs=1,
+                    dt=0.1,
+                )
+        initialize.assert_not_called()
 
 
 class JupiterValidationTests(unittest.TestCase):
