@@ -169,16 +169,18 @@ def _init_julia():
             @assert size(eps_batch, 1) == n_batch "eps_batch must have one row per theta"
             out = Matrix{Float64}(undef, n_batch, Tobs)
 
-            @inbounds for i in 1:n_batch
-                theta_i = tuple(theta_batch[i, :]...)
-                out[i, :] .= sn_from_noise(
-                    theta_i,
-                    view(eps_batch, i, :);
-                    Twarmup=Twarmup,
-                    Tobs=Tobs,
-                    dt=dt,
-                    saveat=saveat,
-                )
+            Threads.@threads :static for i in 1:n_batch
+                @inbounds begin
+                    theta_i = tuple(theta_batch[i, :]...)
+                    out[i, :] .= sn_from_noise(
+                        theta_i,
+                        view(eps_batch, i, :);
+                        Twarmup=Twarmup,
+                        Tobs=Tobs,
+                        dt=dt,
+                        saveat=saveat,
+                    )
+                end
             end
             return out
         end
